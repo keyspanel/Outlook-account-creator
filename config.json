@@ -5,5 +5,8 @@
     "username": "",
     "password": "",
     "headless": false,
-    "manual_captcha_wait_seconds": 600
+    "mobile_emulation": true,
+    "device_name": "Pixel 7",
+    "manual_captcha_wait_seconds": 600,
+    "manual_takeover_wait_seconds": 900
 }
