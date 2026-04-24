@@ -1,0 +1,9 @@
+{
+    "mode": 0,
+    "proxy_host": "",
+    "proxy_port": "",
+    "username": "",
+    "password": "",
+    "headless": false,
+    "manual_captcha_wait_seconds": 600
+}
