@@ -155,19 +155,50 @@ def build_driver():
     else:
         print("[*] No proxy")
 
-    browser_path = (
-        shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-    )
-    if browser_path and "/snap/" in os.path.realpath(browser_path):
-        print("[!] Detected snap-packaged browser at "
-              f"{os.path.realpath(browser_path)}.\n"
-              "    Snap Chromium does not work with Selenium. Install\n"
-              "    Google Chrome (.deb) instead — see run_vps.sh.")
-    if browser_path:
-        chrome_options.binary_location = browser_path
+    def _is_snap(path):
+        if not path:
+            return False
+        real = os.path.realpath(path)
+        if real == "/usr/bin/snap":
+            return True
+        if "/snap/" in real:
+            return True
+        try:
+            with open(real, 'rb') as fh:
+                head = fh.read(2048)
+            if b'snap' in head and not head.startswith(b'\x7fELF'):
+                return True
+        except Exception:
+            pass
+        return False
+
+    browser_path = None
+    for name in ("google-chrome", "google-chrome-stable"):
+        p = shutil.which(name)
+        if p and not _is_snap(p):
+            browser_path = p
+            break
+    if not browser_path:
+        for name in ("chromium", "chromium-browser"):
+            p = shutil.which(name)
+            if p and not _is_snap(p):
+                browser_path = p
+                break
+
+    if not browser_path:
+        snap_p = shutil.which("chromium") or shutil.which("chromium-browser")
+        raise WebDriverException(
+            "No Selenium-compatible browser found. "
+            f"{'Snap Chromium at ' + (snap_p or 'unknown') + ' is NOT usable. ' if snap_p else ''}"
+            "Install Google Chrome with:\n"
+            "  sudo snap remove chromium\n"
+            "  sudo apt-get remove --purge -y chromium-browser chromium chromium-chromedriver\n"
+            "  wget -qO /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n"
+            "  sudo apt-get install -y /tmp/chrome.deb"
+        )
+
+    chrome_options.binary_location = browser_path
+    print(f"[*] Using browser: {browser_path}")
 
     chromedriver_path = shutil.which("chromedriver")
     if chromedriver_path:
