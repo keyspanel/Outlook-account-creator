@@ -36,6 +36,29 @@ dependency entirely:
 - `fake_data.py` — generates realistic names, passwords, birth dates
 - `config.json` — proxy + headless + mobile + timeout settings
 - `requirements.txt` — selenium, faker, requests, fake-useragent
+- `inspect_birthday.py` — diagnostic that drives to the details page and
+  dumps the live birthday DOM (used to confirm real selectors).
+
+## Verified Microsoft mobile-signup DOM (April 2026)
+
+Page order observed: **email → password → birthdate → name → captcha**.
+(Microsoft sometimes shuffles name/birthdate; the script tries name both
+before and after birthdate.)
+
+Birthdate page elements:
+
+- Country: `<button id="countryDropdownId" role="combobox">` —
+  pre-filled to `IN` based on egress IP, untouched.
+- Month: `<button id="BirthMonthDropdown" name="BirthMonth"
+  role="combobox" aria-label="Birth month">`
+  - Listbox is virtualized; option `.text` is empty in Selenium.
+  - Use `textContent` from JS to match `January`..`December`.
+- Day: `<button id="BirthDayDropdown" name="BirthDay" role="combobox"
+  aria-label="Birth day">` — options have plain text `1`..`31`.
+- Year: `<input type="number" name="BirthYear"
+  aria-label="Birth year">` — plain `send_keys`.
+
+Captcha step is Arkose Labs "Press and hold" (no third-party solver).
 
 ## config.json
 

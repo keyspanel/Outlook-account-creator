@@ -219,27 +219,70 @@ def safe_click(driver, el):
         driver.execute_script("arguments[0].click();", el)
 
 
+def select_fluent_option(driver, button_selectors, option_text, timeout=20):
+    """Open a Fluent UI <button role='combobox'> dropdown and click the
+    option whose textContent equals `option_text`.
+
+    Verified against the real Microsoft mobile signup DOM:
+      - Listbox is rendered with role='listbox' (id like 'fluent-listboxNN')
+      - Options have role='option' and their text is in nested spans, so
+        Selenium's `.text` returns '' for off-screen virtualized rows.
+        Using JS textContent matches reliably.
+    """
+    btn = first_present(driver, button_selectors, timeout=timeout)
+    # Open via JS — bypasses the overlapping <label> click intercept.
+    driver.execute_script("arguments[0].click();", btn)
+    time.sleep(0.6)
+
+    # Try several times to find + click the option (listbox can take a moment
+    # to render after the click).
+    end = time.time() + 10
+    while time.time() < end:
+        clicked = driver.execute_script("""
+            const wanted = arguments[0];
+            // Pick the most recently opened, currently visible listbox.
+            const lbs = Array.from(document.querySelectorAll('[role=listbox]'))
+                .filter(lb => lb.offsetParent !== null);
+            const target = lbs[lbs.length - 1] || document;
+            for (const opt of target.querySelectorAll('[role=option]')) {
+                if ((opt.textContent || '').trim() === wanted) {
+                    opt.scrollIntoView({block: 'center'});
+                    opt.click();
+                    return true;
+                }
+            }
+            return false;
+        """, option_text)
+        if clicked:
+            time.sleep(0.4)
+            return True
+        time.sleep(0.4)
+    raise TimeoutException(f"Couldn't click Fluent option {option_text!r}")
+
+
 def select_value(driver, selectors, value, label=None, timeout=20):
-    """Pick a value from either a native <select> or a custom button dropdown
-    (Microsoft's new mobile signup uses the latter)."""
+    """Hybrid select: native <select>, Fluent UI combobox button, or input."""
     el = first_present(driver, selectors, timeout=timeout)
     tag = el.tag_name.lower()
+    role = (el.get_attribute("role") or "").lower()
+
     if tag == "select":
         Select(el).select_by_value(str(value))
         return
-    # Custom dropdown: open it, then click the option whose visible text
-    # matches `label` (falls back to stringified `value`).
+
+    if tag == "input":
+        el.clear()
+        el.send_keys(str(value))
+        return
+
+    if role == "combobox" or tag == "button":
+        select_fluent_option(driver, selectors,
+                             label if label is not None else str(value),
+                             timeout=timeout)
+        return
+
+    # Fallback: try clicking it like a button
     safe_click(driver, el)
-    time.sleep(0.7)
-    text = label if label is not None else str(value)
-    option_candidates = [
-        (By.XPATH, f"//*[@role='option' and normalize-space()='{text}']"),
-        (By.XPATH, f"//li[normalize-space()='{text}']"),
-        (By.XPATH, f"//button[normalize-space()='{text}']"),
-        (By.XPATH, f"//div[normalize-space()='{text}']"),
-    ]
-    opt = first_present(driver, option_candidates, timeout=8)
-    safe_click(driver, opt)
 
 
 # ---------------------------------------------------------------------------
@@ -361,69 +404,109 @@ class AccGen:
                 TAKEOVER_WAIT,
             )
 
-        # Step 3 — name
+        # Step 3 — name page (Microsoft sometimes skips it; that's fine)
+        first_name_selectors = [
+            (By.ID, "firstNameInput"), (By.NAME, "FirstName"),
+            (By.CSS_SELECTOR, "input[aria-label='First name']"),
+            (By.CSS_SELECTOR, "input[name='firstNameInput']"),
+            (By.CSS_SELECTOR, "input[autocomplete='given-name']"),
+        ]
+        last_name_selectors = [
+            (By.ID, "lastNameInput"), (By.NAME, "LastName"),
+            (By.CSS_SELECTOR, "input[aria-label='Last name']"),
+            (By.CSS_SELECTOR, "input[name='lastNameInput']"),
+            (By.CSS_SELECTOR, "input[autocomplete='family-name']"),
+        ]
         try:
-            first_name_selectors = [
-                (By.ID, "firstNameInput"), (By.NAME, "FirstName"),
-                (By.CSS_SELECTOR, "input[aria-label='First name']"),
-                (By.CSS_SELECTOR, "input[name='firstNameInput']"),
-                (By.CSS_SELECTOR, "input[autocomplete='given-name']"),
-            ]
-            last_name_selectors = [
-                (By.ID, "lastNameInput"), (By.NAME, "LastName"),
-                (By.CSS_SELECTOR, "input[aria-label='Last name']"),
-                (By.CSS_SELECTOR, "input[name='lastNameInput']"),
-                (By.CSS_SELECTOR, "input[autocomplete='family-name']"),
-            ]
-            fill(d, first_name_selectors, first_name)
-            fill(d, last_name_selectors, last_name)
+            fill(d, first_name_selectors, first_name, timeout=8)
+            print(f"[+] Filled first name: {first_name}")
+            fill(d, last_name_selectors, last_name, timeout=5)
+            print(f"[+] Filled last name: {last_name}")
             click_next(d)
+            print("[+] Submitted name page")
+            time.sleep(2)
         except TimeoutException:
-            wait_for_user(
-                d, "name step did not appear",
-                [(By.ID, "BirthMonth"), (By.NAME, "BirthMonth")],
-                TAKEOVER_WAIT,
-            )
+            print("[*] Name page not present, continuing to details page.")
 
-        # Step 4 — birth date (handles native <select> AND new custom
-        # button-based dropdowns Microsoft uses on the mobile flow).
+        # Step 4 — Birth date — REAL Microsoft mobile DOM:
+        #   Month: <button id="BirthMonthDropdown" name="BirthMonth"
+        #                  role="combobox" aria-label="Birth month">
+        #          options: textContent in {'January'..'December'}
+        #   Day:   <button id="BirthDayDropdown"   name="BirthDay"
+        #                  role="combobox" aria-label="Birth day">
+        #          options: textContent in {'1'..'31'}
+        #   Year:  <input type="number" name="BirthYear" aria-label="Birth year">
         try:
             month_selectors = [
-                (By.ID, "BirthMonth"), (By.NAME, "BirthMonth"),
-                (By.ID, "Month"), (By.NAME, "Month"),
-                (By.CSS_SELECTOR, "[aria-label='Month']"),
-                (By.CSS_SELECTOR, "button[id*='month' i]"),
+                (By.ID, "BirthMonthDropdown"),
+                (By.NAME, "BirthMonth"),
+                (By.CSS_SELECTOR, "button[aria-label='Birth month']"),
             ]
             day_selectors = [
-                (By.ID, "BirthDay"), (By.NAME, "BirthDay"),
-                (By.ID, "Day"), (By.NAME, "Day"),
-                (By.CSS_SELECTOR, "[aria-label='Day']"),
-                (By.CSS_SELECTOR, "button[id*='day' i]"),
+                (By.ID, "BirthDayDropdown"),
+                (By.NAME, "BirthDay"),
+                (By.CSS_SELECTOR, "button[aria-label='Birth day']"),
             ]
             year_selectors = [
-                (By.ID, "BirthYear"), (By.NAME, "BirthYear"),
-                (By.ID, "Year"), (By.NAME, "Year"),
-                (By.CSS_SELECTOR, "input[aria-label='Year']"),
-                (By.CSS_SELECTOR, "input[placeholder='Year']"),
+                (By.NAME, "BirthYear"),
+                (By.CSS_SELECTOR, "input[aria-label='Birth year']"),
+                (By.CSS_SELECTOR, "input[type='number'][name='BirthYear']"),
             ]
 
-            select_value(d, month_selectors, birth_date.month,
-                         label=MONTH_NAMES[birth_date.month])
-            select_value(d, day_selectors, birth_date.day,
-                         label=str(birth_date.day))
-            fill(d, year_selectors, str(birth_date.year))
+            month_label = MONTH_NAMES[birth_date.month]
+            print(f"[*] Selecting birth month: {month_label}")
+            select_fluent_option(d, month_selectors, month_label)
+            print(f"[+] Birth month set to {month_label}")
+            time.sleep(0.6)
+
+            day_label = str(birth_date.day)
+            print(f"[*] Selecting birth day: {day_label}")
+            select_fluent_option(d, day_selectors, day_label)
+            print(f"[+] Birth day set to {day_label}")
+            time.sleep(0.6)
+
+            year_label = str(birth_date.year)
+            print(f"[*] Typing birth year: {year_label}")
+            fill(d, year_selectors, year_label)
+            print(f"[+] Birth year set to {year_label}")
+            time.sleep(0.5)
+
+            print(f"[+] BIRTHDATE FILLED: {month_label} {day_label}, {year_label}")
             click_next(d)
-        except TimeoutException:
+            print("[+] Submitted birthdate page")
+            time.sleep(2)
+
+            # Microsoft has been observed to show the name page AFTER the
+            # birthdate page. Try once more here.
+            try:
+                fill(d, first_name_selectors, first_name, timeout=8)
+                print(f"[+] Filled first name (post-birthdate): {first_name}")
+                fill(d, last_name_selectors, last_name, timeout=5)
+                print(f"[+] Filled last name (post-birthdate): {last_name}")
+                click_next(d)
+                print("[+] Submitted name page (post-birthdate)")
+                time.sleep(2)
+            except TimeoutException:
+                print("[*] No name page after birthdate either, continuing.")
+
+        except TimeoutException as e:
+            print(f"[!] Birth-date controls didn't appear in time: {e}")
             wait_for_user(
-                d, "birth-date step did not appear",
-                [(By.XPATH, "//*[contains(text(), 'puzzle') or contains(text(), 'Verify')]")],
+                d, "please complete the birthdate manually and tap Next",
+                [(By.XPATH,
+                  "//iframe[contains(@src,'arkoselabs') or contains(@src,'enforcement')]"
+                  " | //*[contains(text(), 'Press and hold')]"
+                  " | //*[contains(text(), 'puzzle')]")],
                 TAKEOVER_WAIT,
             )
         except Exception as e:
-            print(f"[!] Birth-date step couldn't be automated ({e}).")
+            print(f"[!] Birth-date automation hit an error ({e}).")
             wait_for_user(
-                d, "please fill the birth-date manually and tap Next",
-                [(By.XPATH, "//*[contains(text(), 'puzzle') or contains(text(), 'Verify') or contains(text(), 'Phone')]")],
+                d, "please complete the birthdate manually and tap Next",
+                [(By.XPATH,
+                  "//iframe[contains(@src,'arkoselabs') or contains(@src,'enforcement')]"
+                  " | //*[contains(text(), 'Press and hold')]"
+                  " | //*[contains(text(), 'puzzle')]")],
                 TAKEOVER_WAIT,
             )
 
@@ -440,26 +523,51 @@ class AccGen:
         except TimeoutException:
             pass
 
-        # Step 6 — captcha (manual)
-        banner(f"[!] CAPTCHA STEP\n"
-               f"    Solve Microsoft's puzzle in the preview browser.\n"
-               f"    Waiting up to {CAPTCHA_WAIT}s for you ...")
+        # Step 6 — captcha (manual). Confirm the challenge actually appeared
+        # before counting down, so we know we really got there.
+        captcha_present_xpath = (
+            "//iframe[contains(@src,'arkoselabs') or contains(@src,'enforcement')"
+            " or contains(@src,'fc/') or contains(@src,'funcaptcha')]"
+            " | //*[contains(translate(text(), 'PRESHOLD', 'preshold'), 'press and hold')]"
+            " | //*[@id='enforcementFrame']"
+            " | //*[contains(text(), 'puzzle')]"
+        )
+        try:
+            WebDriverWait(d, 30).until(
+                EC.presence_of_element_located((By.XPATH, captcha_present_xpath))
+            )
+            banner("[+] CAPTCHA challenge appeared on the page.\n"
+                   f"    Solve it in the mobile browser preview.\n"
+                   f"    Waiting up to {CAPTCHA_WAIT}s for you to finish ...")
+        except TimeoutException:
+            print("[!] Captcha challenge did not appear within 30s — Microsoft\n"
+                  "    may have shown a different verification step. Continuing\n"
+                  "    to wait for the success page anyway.")
 
         success_xpath = (
             "//*[contains(text(), 'Welcome')]"
-            " | //*[contains(text(), 'account.microsoft.com')]"
+            " | //*[contains(text(), 'Stay signed in')]"
             " | //a[contains(@href, 'outlook.live.com')]"
+            " | //a[contains(@href, 'outlook.office')]"
             " | //a[contains(@href, 'account.microsoft')]"
         )
         try:
             WebDriverWait(d, CAPTCHA_WAIT).until(
-                EC.presence_of_element_located((By.XPATH, success_xpath))
+                lambda dr: (
+                    "account.microsoft.com" in dr.current_url
+                    or "outlook.live.com" in dr.current_url
+                    or "outlook.office.com" in dr.current_url
+                    or len(dr.find_elements(By.XPATH, success_xpath)) > 0
+                )
             )
         except TimeoutException:
             print("[!] Captcha wait expired without seeing a success page.")
             return
 
-        banner("[+] Account created successfully!")
+        banner(f"[+] ACCOUNT CREATED SUCCESSFULLY!\n"
+               f"    Email:    {email}\n"
+               f"    Password: {password_value}\n"
+               f"    Final URL: {d.current_url}")
         with open('generated.txt', 'a') as f:
             if os.path.exists('generated.txt') and os.path.getsize('generated.txt') > 0:
                 f.write("\n")
