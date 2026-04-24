@@ -8,5 +8,9 @@
     "mobile_emulation": true,
     "device_name": "Pixel 7",
     "manual_captcha_wait_seconds": 600,
-    "manual_takeover_wait_seconds": 900
+    "manual_takeover_wait_seconds": 900,
+    "birth_year_min": 1980,
+    "birth_year_max": 2004,
+    "accounts_to_create": 0,
+    "pause_between_accounts_seconds": 5
 }

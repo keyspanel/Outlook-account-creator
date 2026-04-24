@@ -1,105 +1,155 @@
-# Outlook Account Generator (NopeCHA-free, mobile build)
+# Outlook Account Generator (Mobile, Manual Captcha Only)
 
-A Selenium script that automates the Microsoft / Outlook signup flow.
-The original project relied on the **NopeCHA** captcha-solving extension and
-its paid API key. NopeCHA is no longer offered, so this build removes that
-dependency entirely:
+A Selenium script that automates the Microsoft / Outlook signup flow on a
+mobile-emulated Chromium browser. **Everything is automatic except the
+captcha** — the script fills email, password, name, and birthday, then
+hands the puzzle to a human to press-and-hold through any normal browser.
 
-- Browser runs as a **mobile phone** (Pixel 7 by default — viewport, touch,
-  user agent), exactly like signing up from a real phone.
-- The browser window is **visible inside Replit's preview pane** via the
-  workflow `outputType: vnc` (a virtual display + VNC).
-- Captchas are solved manually by the user in that visible window — no key,
-  no third-party service, no fakery.
-- When automation can't auto-fill a step (Microsoft A/B-tests their form
-  HTML constantly), the script enters **manual-takeover mode** instead of
-  restarting in a tight loop. The browser stays open and you finish the
-  step yourself.
+## Three ways to run it
 
-## How to use
+### 1. On a VPS (recommended — easiest, fastest, runs 24/7)
 
-1. Workflow `Start application` is configured as `python3 main.py` with
-   `outputType: vnc`. It starts automatically.
-2. Open the workspace **Preview / VNC** tab — you'll see Chromium emulating
-   a Pixel 7, opening `signup.live.com/signup?lic=1`.
-3. The script auto-fills email + password, then advances through the form.
-4. When it reaches Microsoft's puzzle (or any step it can't auto-fill), the
-   script prints a `[!] MANUAL TAKEOVER NEEDED` banner and waits up to
-   900s for the next page to load — finish that step yourself.
-5. Once the post-captcha success page appears, the email + password are
-   appended to `generated.txt`.
+```bash
+git clone <this-repo> outlook-gen
+cd outlook-gen
+./run_vps.sh
+```
 
-## Files
+The launcher does everything for you:
 
-- `main.py` — main automation script (no NopeCHA references)
-- `check_email.py` — checks whether a generated address is available
-- `fake_data.py` — generates realistic names, passwords, birth dates
-- `config.json` — proxy + headless + mobile + timeout settings
-- `requirements.txt` — selenium, faker, requests, fake-useragent
-- `inspect_birthday.py` — diagnostic that drives to the details page and
-  dumps the live birthday DOM (used to confirm real selectors).
+- installs Chromium, Xvfb, x11vnc, noVNC, websockify if missing
+- creates a Python virtualenv
+- installs Python dependencies
+- starts a virtual display, VNC server, and noVNC web bridge
+- detects your VPS public IP
+- prints **one URL** that you open in any phone or laptop browser to
+  see and tap through the captcha
+- starts the generator
 
-## Verified Microsoft mobile-signup DOM (April 2026)
+Make sure port 6080 is open in your VPS firewall:
 
-Page order observed: **email → password → birthdate → name → captcha**.
-(Microsoft sometimes shuffles name/birthdate; the script tries name both
-before and after birthdate.)
+```bash
+sudo ufw allow 6080/tcp
+```
 
-Birthdate page elements:
+Stop with `Ctrl-C` — the launcher cleans up all the background services.
 
-- Country: `<button id="countryDropdownId" role="combobox">` —
-  pre-filled to `IN` based on egress IP, untouched.
-- Month: `<button id="BirthMonthDropdown" name="BirthMonth"
-  role="combobox" aria-label="Birth month">`
-  - Listbox is virtualized; option `.text` is empty in Selenium.
-  - Use `textContent` from JS to match `January`..`December`.
-- Day: `<button id="BirthDayDropdown" name="BirthDay" role="combobox"
-  aria-label="Birth day">` — options have plain text `1`..`31`.
-- Year: `<input type="number" name="BirthYear"
-  aria-label="Birth year">` — plain `send_keys`.
+### 2. On Replit
 
-Captcha step is Arkose Labs "Press and hold" (no third-party solver).
+The `Start application` workflow runs `python3 main.py` with
+`outputType: vnc`, so the browser appears in the Replit Preview pane.
+Solve the captcha there. Selenium plus Chromium are pre-installed via Nix.
 
-## config.json
+### 3. On Termux (Android phone)
+
+Install proot-distro and run Ubuntu inside Termux:
+
+```bash
+pkg install proot-distro
+proot-distro install ubuntu
+proot-distro login ubuntu
+# inside Ubuntu:
+git clone <this-repo> outlook-gen
+cd outlook-gen
+./run_vps.sh
+```
+
+Then open `http://localhost:6080/vnc.html` in your phone's Chrome app.
+
+## What the script does for you automatically
+
+| Step | Automatic |
+|---|---|
+| Opens Microsoft signup as a Pixel 7 | yes |
+| Generates a unique available email address | yes |
+| Generates a strong password | yes |
+| Fills first name and last name | yes |
+| Picks a random birthday — year **1980–2004**, valid month + day | yes |
+| Submits each step | yes |
+| **Solves the Arkose "press and hold" captcha** | **NO — you do this** |
+| Saves the credentials to `generated.txt` | yes |
+| Loops to create the next account | yes |
+
+## Configuration (`config.json`)
 
 ```json
 {
-    "mode": 0,                              // 0=no proxy, 1=proxy, 2=proxy+auth
+    "mode": 0,
     "proxy_host": "",
     "proxy_port": "",
     "username": "",
     "password": "",
-    "headless": false,                      // keep false: a human solves captchas
-    "mobile_emulation": true,               // emulate a phone
-    "device_name": "Pixel 7",               // or "iPhone 14 Pro", "Samsung Galaxy S22"
+    "headless": false,
+    "mobile_emulation": true,
+    "device_name": "Pixel 7",
     "manual_captcha_wait_seconds": 600,
-    "manual_takeover_wait_seconds": 900
+    "manual_takeover_wait_seconds": 900,
+    "birth_year_min": 1980,
+    "birth_year_max": 2004,
+    "accounts_to_create": 0,
+    "pause_between_accounts_seconds": 5
 }
 ```
 
-## What was removed
+Key settings:
 
-- All `nopecha.com/f/ext.crx` downloads
-- `chrome_options.add_extension('ext.crx')`
-- `https://nopecha.com/setup#{api_key}` setup call
-- The `api_key` config field
+- `accounts_to_create`: `0` = unlimited (loop until you press Ctrl-C),
+  `1` = make one and stop, or any positive number for a fixed batch.
+- `birth_year_min` / `birth_year_max`: random year range. Defaults to
+  1980–2004. The month and day are also chosen randomly (with valid
+  day-of-month for each month, leap years respected).
+- `device_name`: `"Pixel 7"`, `"iPhone 14 Pro"`, or `"Samsung Galaxy S22"`.
+- `mode`: `0` = no proxy, `1` = proxy without auth, `2` = proxy with auth.
+- `manual_captcha_wait_seconds`: how long the script waits for you to
+  solve the captcha before giving up (default 10 minutes).
+
+## Files
+
+- `run_vps.sh` — one-command launcher for VPS / Termux-Ubuntu
+- `main.py` — the Selenium automation
+- `fake_data.py` — generates realistic name, password, birthday
+- `check_email.py` — checks whether a generated address is available
+- `config.json` — all user-editable settings
+- `requirements.txt` — Python dependencies
+- `inspect_birthday.py` — diagnostic that dumps the live birthday DOM
+- `generated.txt` — created at runtime, holds successful accounts
+
+## Output
+
+Each successful account is appended to `generated.txt`:
+
+```
+Email: someuser123@outlook.com
+Password: SuperSecretPass99
+
+Email: another456@outlook.com
+Password: AnotherStrong42
+```
+
+## Notes / hardening
+
+- The script never restarts on its own when an unexpected page appears —
+  it switches to manual takeover mode so the visible browser stays open
+  and you can finish the step yourself.
+- For volume use, set a residential proxy in `config.json` (`mode: 1` or
+  `2`). A bare VPS IP gets rate-limited by Microsoft fairly quickly.
+- For security on a public VPS, prefer the SSH-tunnel pattern instead of
+  exposing port 6080:
+  ```bash
+  ssh -L 6080:localhost:6080 root@YOUR_VPS_IP
+  ```
+  Then visit `http://localhost:6080/vnc.html` on your local machine.
+
+## What was removed from earlier versions
+
+- All NopeCHA references (extension, API key, paid solver)
 
 ## What was added / fixed
 
-- System Chromium 138 + matching ChromeDriver (Nix-installed)
-- Mobile emulation (Pixel 7 / iPhone 14 Pro / Galaxy S22 profiles)
-- Hybrid `select_value` helper that handles both native `<select>`
-  dropdowns and Microsoft's new custom button-based dropdowns
-- `safe_click` JS-click fallback (bypasses overlapping label overlays)
-- Multiple fallback selectors for every form step (id / name /
-  aria-label / autocomplete / data-testid)
-- Disabled Chromium's "Save password?" popup (was covering the form)
-- Manual-takeover mode instead of restart loop, so the browser stays
-  visible in the preview pane during interactive steps
-- Browser persists at end of run for further inspection
-
-## System dependencies
-
-- `chromium` (Nix)
-- `chromedriver` (Nix)
-- Python 3.11
+- One-command VPS launcher (`run_vps.sh`) with auto-install
+- Multi-account loop with configurable batch size
+- Random birthday in the 1980–2004 range with valid day-of-month
+- Captcha banner now prints the exact noVNC URL to open in your browser
+- Beginner-friendly startup banner showing device, target count, and
+  the captcha URL
+- Per-account browser session (clean state between accounts)

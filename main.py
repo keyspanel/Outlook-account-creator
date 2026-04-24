@@ -28,6 +28,10 @@ MOBILE = bool(config.get('mobile_emulation', True))
 DEVICE_NAME = config.get('device_name', 'Pixel 7')
 CAPTCHA_WAIT = int(config.get('manual_captcha_wait_seconds', 600))
 TAKEOVER_WAIT = int(config.get('manual_takeover_wait_seconds', 900))
+ACCOUNTS_TO_CREATE = int(config.get('accounts_to_create', 0))
+PAUSE_BETWEEN = int(config.get('pause_between_accounts_seconds', 5))
+
+NOVNC_URL = os.environ.get('NOVNC_URL', '').strip()
 
 # A few realistic mobile profiles. Selenium's mobileEmulation accepts either
 # a built-in Chrome device name OR a custom deviceMetrics + userAgent block.
@@ -291,9 +295,18 @@ def select_value(driver, selectors, value, label=None, timeout=20):
 # browser (which is exactly what they're already doing for the captcha).
 # ---------------------------------------------------------------------------
 
+def _browser_hint():
+    if NOVNC_URL:
+        return (f"    >>> Open this link in YOUR phone or laptop browser: <<<\n"
+                f"    {NOVNC_URL}\n")
+    return "    Use the browser preview pane to continue.\n"
+
+
 def wait_for_user(driver, reason, success_selectors, timeout):
-    banner(f"[!] MANUAL TAKEOVER NEEDED — {reason}\n"
-           f"    Please continue in the browser preview yourself.\n"
+    banner(f"[!] MANUAL STEP NEEDED — {reason}\n"
+           f"\n"
+           f"{_browser_hint()}"
+           f"    Finish this step yourself, then the script will continue.\n"
            f"    Waiting up to {timeout}s for the next page to load ...")
     end = time.time() + timeout
     while time.time() < end:
@@ -536,9 +549,11 @@ class AccGen:
             WebDriverWait(d, 30).until(
                 EC.presence_of_element_located((By.XPATH, captcha_present_xpath))
             )
-            banner("[+] CAPTCHA challenge appeared on the page.\n"
-                   f"    Solve it in the mobile browser preview.\n"
-                   f"    Waiting up to {CAPTCHA_WAIT}s for you to finish ...")
+            banner(f"[+] CAPTCHA appeared — your turn!\n"
+                   f"\n"
+                   f"{_browser_hint()}"
+                   f"    Press and hold the puzzle button until it finishes.\n"
+                   f"    Waiting up to {CAPTCHA_WAIT}s for you ...")
         except TimeoutException:
             print("[!] Captcha challenge did not appear within 30s — Microsoft\n"
                   "    may have shown a different verification step. Continuing\n"
@@ -581,29 +596,43 @@ class AccGen:
 
 
 def main():
-    banner(f" Outlook account generator — NopeCHA-free, mobile build\n"
-           f" Device: {DEVICE_NAME if MOBILE else 'desktop'}\n"
-           f" Headless: {HEADLESS}")
+    target = "unlimited" if ACCOUNTS_TO_CREATE == 0 else str(ACCOUNTS_TO_CREATE)
+    banner(f" Outlook Account Generator — Mobile Build\n"
+           f" Device:        {DEVICE_NAME if MOBILE else 'desktop'}\n"
+           f" Headless:      {HEADLESS}\n"
+           f" Accounts:      {target}\n"
+           f" Output file:   generated.txt\n"
+           f" Solve captcha: {NOVNC_URL or '(use the browser preview pane)'}")
 
-    gen = AccGen()
+    n = 0
     try:
-        gen.run_once()
-    except WebDriverException as e:
-        print(f"[!] Browser error: {e}")
-
-    # Keep the browser window open so you can inspect / use it afterwards
-    # in the Replit preview pane. Exit by stopping the workflow.
-    banner("Run finished. Keeping the browser open in the preview pane.\n"
-           "Stop the workflow when you're done.")
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        if gen.driver:
+        while ACCOUNTS_TO_CREATE == 0 or n < ACCOUNTS_TO_CREATE:
+            n += 1
+            banner(f" >>> Creating account #{n} <<<")
+            gen = AccGen()
             try:
-                gen.driver.quit()
-            except Exception:
-                pass
+                gen.run_once()
+            except WebDriverException as e:
+                print(f"[!] Browser error: {e}")
+            except Exception as e:
+                print(f"[!] Unexpected error: {e}")
+            finally:
+                if gen.driver:
+                    try:
+                        gen.driver.quit()
+                    except Exception:
+                        pass
+
+            done = ACCOUNTS_TO_CREATE != 0 and n >= ACCOUNTS_TO_CREATE
+            if not done:
+                print(f"\n[*] Next account in {PAUSE_BETWEEN}s ...  "
+                      f"(press Ctrl-C to stop)\n")
+                time.sleep(PAUSE_BETWEEN)
+    except KeyboardInterrupt:
+        print("\n[*] Stopped by user.")
+
+    banner(f" All done. Created {n} account(s).\n"
+           f" Saved to generated.txt")
 
 
 if __name__ == '__main__':
