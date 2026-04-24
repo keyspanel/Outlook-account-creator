@@ -112,16 +112,89 @@ chrome.webRequest.onAuthRequired.addListener(
     return pluginfile
 
 
+STEALTH_JS = r"""
+(() => {
+    try {
+        Object.defineProperty(Navigator.prototype, 'webdriver', {
+            get: () => undefined,
+            configurable: true,
+        });
+    } catch (e) {}
+    try {
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => {
+                const arr = [
+                    { name: 'PDF Viewer', filename: 'internal-pdf-viewer' },
+                    { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer' },
+                    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer' },
+                    { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer' },
+                    { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer' },
+                ];
+                arr.item = (i) => arr[i];
+                arr.namedItem = (n) => arr.find(p => p.name === n) || null;
+                arr.refresh = () => {};
+                return arr;
+            },
+        });
+    } catch (e) {}
+    try {
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+        });
+    } catch (e) {}
+    try {
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+            window.chrome.runtime = { id: undefined, OnInstalledReason: {}, OnRestartRequiredReason: {} };
+        }
+        if (!window.chrome.csi) window.chrome.csi = function () { return {}; };
+        if (!window.chrome.loadTimes) window.chrome.loadTimes = function () { return {}; };
+    } catch (e) {}
+    try {
+        const originalQuery = navigator.permissions && navigator.permissions.query;
+        if (originalQuery) {
+            navigator.permissions.query = (p) =>
+                p && p.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(p);
+        }
+    } catch (e) {}
+    try {
+        const ua = navigator.userAgent || '';
+        const isMobile = /Android|iPhone|Mobile/i.test(ua);
+        Object.defineProperty(navigator, 'maxTouchPoints', {
+            get: () => isMobile ? 5 : 0,
+        });
+    } catch (e) {}
+    try {
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function (p) {
+            if (p === 37445) return 'Google Inc. (Qualcomm)';
+            if (p === 37446) return 'ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)';
+            return getParameter.call(this, p);
+        };
+    } catch (e) {}
+    try {
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    } catch (e) {}
+})();
+"""
+
+
 def build_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--lang=en")
+    chrome_options.add_argument("--lang=en-US,en")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_argument("--disable-features=AutomationControlled,UserAgentClientHint")
+    chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_argument("--disable-popup-blocking")
+    chrome_options.add_argument("--disable-notifications")
+    chrome_options.add_argument("--use-gl=swiftshader")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     chrome_options.add_experimental_option("useAutomationExtension", False)
-    # Stop Chromium from popping its own "Save password?" dialog, which
-    # otherwise covers Microsoft's form during the birth-date step.
     chrome_options.add_experimental_option("prefs", {
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False,
@@ -134,12 +207,20 @@ def build_driver():
     if MOBILE:
         profile = DEVICE_PROFILES.get(DEVICE_NAME, DEVICE_PROFILES["Pixel 7"])
         chrome_options.add_experimental_option("mobileEmulation", profile)
-        # A phone-shaped window so the chrome around the page also looks mobile.
         w = profile["deviceMetrics"]["width"]
         h = profile["deviceMetrics"]["height"]
         chrome_options.add_argument(f"--window-size={w + 20},{h + 120}")
+        print("[!] Mobile emulation is ON. Arkose's mobile press-and-hold")
+        print("    captcha is HARD to pass via noVNC mouse input. If you")
+        print("    keep getting 'Please try again', set mobile_emulation:")
+        print("    false in config.json — desktop captcha is mouse-based")
+        print("    and works much better through noVNC.")
     else:
         chrome_options.add_argument("--window-size=1280,900")
+        chrome_options.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
 
     if HEADLESS:
         chrome_options.add_argument("--headless=new")
@@ -211,6 +292,15 @@ def build_driver():
                                   options=chrome_options)
     else:
         driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": STEALTH_JS},
+        )
+        print("[+] Stealth fingerprint injection active")
+    except Exception as e:
+        print(f"[!] Stealth injection failed (Selenium may still work): {e}")
 
     setattr(driver, "_outlookgen_profile_dir", profile_dir)
     return driver
