@@ -35,7 +35,15 @@ is_snap_browser() {
     [ -z "$b" ] && return 1
     local real
     real="$(readlink -f "$b" 2>/dev/null || echo "$b")"
-    [[ "$real" == */snap/* ]]
+    [[ "$real" == */snap/* ]] && return 0
+    if file -b "$real" 2>/dev/null | grep -qiE "shell script|ascii text"; then
+        if grep -qE 'snap|/snap/' "$real" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    [ -d /snap/chromium ] && return 0
+    [ -L /snap/bin/chromium ] && return 0
+    return 1
 }
 
 find_browser() {
@@ -285,16 +293,25 @@ if command -v apt-get >/dev/null 2>&1; then
         $SUDO apt-get install -y "${missing[@]}"
     fi
 
-    BROWSER="$(find_browser)"
-    if [ -z "$BROWSER" ] || is_snap_browser "$BROWSER"; then
+    command -v file >/dev/null 2>&1 || $SUDO apt-get install -y file >/dev/null
+
+    if ! command -v google-chrome >/dev/null 2>&1 \
+       && ! command -v google-chrome-stable >/dev/null 2>&1; then
+        BROWSER="$(find_browser)"
         if [ -n "$BROWSER" ] && is_snap_browser "$BROWSER"; then
-            warn "Detected snap-packaged browser at $(readlink -f "$BROWSER")."
-            warn "Snap Chromium can't be driven by Selenium. Replacing with Google Chrome ..."
+            warn "Detected snap-packaged Chromium at $(readlink -f "$BROWSER" 2>/dev/null || echo "$BROWSER")"
+            warn "Snap Chromium cannot be driven by Selenium. Removing it ..."
             $SUDO apt-get remove -y chromium-browser chromium chromium-chromedriver 2>/dev/null || true
             $SUDO snap remove chromium 2>/dev/null || true
         fi
         install_google_chrome
     fi
+fi
+
+if ! command -v google-chrome >/dev/null 2>&1 \
+   && ! command -v google-chrome-stable >/dev/null 2>&1; then
+    warn "Google Chrome was not installed successfully. Aborting."
+    exit 1
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
