@@ -434,8 +434,17 @@ echo -e "   ${CYAN}${SUDO} ufw allow ${NOVNC_PORT}/tcp${RESET}"
 echo
 echo -e " The script auto-fills email, password, name, and birthday."
 echo -e " ${BOLD}Only the captcha needs you${RESET} — press and hold the puzzle button"
-echo -e " in the browser tab when it appears."
+echo -e " in the browser tab when it appears. Microsoft may show 2-3 puzzles"
+echo -e " in a row — solve them all and the script will continue automatically."
+echo
+echo -e " ${BOLD}One-command install on a fresh VPS:${RESET}"
+echo -e "   ${CYAN}curl -fsSL https://raw.githubusercontent.com/keyspanel/Outlook-account-creator/main/install.sh | sudo bash${RESET}"
 echo -e "${BOLD}=================================================================${RESET}"
 echo
 
-python3 main.py
+if [ -x ./venv/bin/python ]; then
+    PYBIN="./venv/bin/python"
+else
+    PYBIN="python3"
+fi
+"$PYBIN" main.py

@@ -7,11 +7,23 @@ hands the puzzle to a human to press-and-hold through any normal browser.
 
 ## Three ways to run it
 
-### 1. On a VPS (recommended — easiest, fastest, runs 24/7)
+### 1. On a fresh VPS — ONE command
 
 ```bash
-git clone <this-repo> outlook-gen
-cd outlook-gen
+curl -fsSL https://raw.githubusercontent.com/keyspanel/Outlook-account-creator/main/install.sh | sudo bash
+```
+
+That single command:
+
+- removes the broken snap-packaged Chromium (if present)
+- installs Google Chrome, Python, Xvfb, x11vnc, websockify, noVNC
+- clones the project to `/opt/outlook-gen`
+- starts the generator
+
+### 2. On a VPS where the project is already cloned
+
+```bash
+cd /opt/outlook-gen
 ./run_vps.sh
 ```
 
@@ -125,6 +137,24 @@ Password: SuperSecretPass99
 Email: another456@outlook.com
 Password: AnotherStrong42
 ```
+
+## Captcha handling (improved)
+
+Microsoft's Arkose / FunCaptcha typically shows **2–3 puzzles in a row**
+("press and hold" + 1–2 image puzzles). The script:
+
+1. Waits up to 30 s for the first captcha frame to appear.
+2. Tracks whether a captcha frame is currently visible. While visible,
+   it just keeps waiting — chained puzzles do NOT count as a failure.
+3. As soon as the captcha frame disappears AND stays gone for ≥ 4 s,
+   it checks for the post-captcha "Stay signed in?" prompt and clicks
+   **Yes** automatically.
+4. Logs any visible Microsoft error message ("Something went wrong /
+   Please try again") so you can see why a flow stalled.
+5. Each account uses a fresh, isolated Chrome profile (`--user-data-dir`
+   in a `tempfile.mkdtemp` directory) which is deleted on close — so
+   cookies, cache, and tokens from one account never bleed into the
+   next.
 
 ## Notes / hardening
 

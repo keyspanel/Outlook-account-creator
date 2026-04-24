@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 import zipfile
 import json
 import time
@@ -200,11 +201,19 @@ def build_driver():
     chrome_options.binary_location = browser_path
     print(f"[*] Using browser: {browser_path}")
 
+    profile_dir = tempfile.mkdtemp(prefix="outlookgen_")
+    chrome_options.add_argument(f"--user-data-dir={profile_dir}")
+    chrome_options.add_argument("--profile-directory=Default")
+
     chromedriver_path = shutil.which("chromedriver")
     if chromedriver_path:
-        return webdriver.Chrome(service=Service(executable_path=chromedriver_path),
-                                options=chrome_options)
-    return webdriver.Chrome(options=chrome_options)
+        driver = webdriver.Chrome(service=Service(executable_path=chromedriver_path),
+                                  options=chrome_options)
+    else:
+        driver = webdriver.Chrome(options=chrome_options)
+
+    setattr(driver, "_outlookgen_profile_dir", profile_dir)
+    return driver
 
 
 # ---------------------------------------------------------------------------
@@ -577,47 +586,166 @@ class AccGen:
         except TimeoutException:
             pass
 
-        # Step 6 — captcha (manual). Confirm the challenge actually appeared
-        # before counting down, so we know we really got there.
-        captcha_present_xpath = (
+        # Step 6 — captcha (manual). Microsoft uses Arkose Labs / FunCaptcha
+        # which often presents 2-3 puzzles in a row. We treat the *whole chain*
+        # as one captcha session: keep waiting as long as either (a) a captcha
+        # iframe is currently visible, or (b) one was visible recently and the
+        # page hasn't yet navigated to a success URL.
+        captcha_iframe_xpath = (
             "//iframe[contains(@src,'arkoselabs') or contains(@src,'enforcement')"
-            " or contains(@src,'fc/') or contains(@src,'funcaptcha')]"
-            " | //*[contains(translate(text(), 'PRESHOLD', 'preshold'), 'press and hold')]"
+            " or contains(@src,'fc/') or contains(@src,'funcaptcha')"
+            " or contains(@src,'hcaptcha') or contains(@src,'recaptcha')]"
             " | //*[@id='enforcementFrame']"
-            " | //*[contains(text(), 'puzzle')]"
         )
-        try:
-            WebDriverWait(d, 30).until(
-                EC.presence_of_element_located((By.XPATH, captcha_present_xpath))
-            )
-            banner(f"[+] CAPTCHA appeared — your turn!\n"
-                   f"\n"
-                   f"{_browser_hint()}"
-                   f"    Press and hold the puzzle button until it finishes.\n"
-                   f"    Waiting up to {CAPTCHA_WAIT}s for you ...")
-        except TimeoutException:
-            print("[!] Captcha challenge did not appear within 30s — Microsoft\n"
-                  "    may have shown a different verification step. Continuing\n"
-                  "    to wait for the success page anyway.")
-
+        captcha_text_xpath = (
+            "//*[contains(translate(normalize-space(.),"
+            " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            " 'abcdefghijklmnopqrstuvwxyz'),"
+            " 'press and hold')]"
+            " | //*[contains(translate(normalize-space(.),"
+            " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            " 'abcdefghijklmnopqrstuvwxyz'),"
+            " 'puzzle')]"
+            " | //*[contains(translate(normalize-space(.),"
+            " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            " 'abcdefghijklmnopqrstuvwxyz'),"
+            " 'verify you are human')]"
+        )
+        success_url_fragments = (
+            "account.microsoft.com",
+            "outlook.live.com",
+            "outlook.office.com",
+            "login.live.com/oauth20",
+        )
         success_xpath = (
             "//*[contains(text(), 'Welcome')]"
-            " | //*[contains(text(), 'Stay signed in')]"
             " | //a[contains(@href, 'outlook.live.com')]"
             " | //a[contains(@href, 'outlook.office')]"
             " | //a[contains(@href, 'account.microsoft')]"
         )
-        try:
-            WebDriverWait(d, CAPTCHA_WAIT).until(
-                lambda dr: (
-                    "account.microsoft.com" in dr.current_url
-                    or "outlook.live.com" in dr.current_url
-                    or "outlook.office.com" in dr.current_url
-                    or len(dr.find_elements(By.XPATH, success_xpath)) > 0
-                )
-            )
-        except TimeoutException:
-            print("[!] Captcha wait expired without seeing a success page.")
+        ms_error_xpath = (
+            "//*[contains(translate(normalize-space(.),"
+            " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            " 'abcdefghijklmnopqrstuvwxyz'),"
+            " \"something went wrong\")]"
+            " | //*[contains(translate(normalize-space(.),"
+            " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            " 'abcdefghijklmnopqrstuvwxyz'),"
+            " \"please try again\")]"
+        )
+
+        def _captcha_visible():
+            try:
+                for el in d.find_elements(By.XPATH, captcha_iframe_xpath):
+                    if el.is_displayed():
+                        return True
+                for el in d.find_elements(By.XPATH, captcha_text_xpath):
+                    if el.is_displayed():
+                        return True
+            except Exception:
+                pass
+            return False
+
+        def _is_success():
+            url = d.current_url or ""
+            if any(f in url for f in success_url_fragments):
+                return True
+            try:
+                for el in d.find_elements(By.XPATH, success_xpath):
+                    if el.is_displayed():
+                        return True
+            except Exception:
+                pass
+            return False
+
+        def _click_stay_signed_in():
+            for sel in (
+                (By.ID, "acceptButton"),
+                (By.CSS_SELECTOR, "button[data-testid='primaryButton']"),
+                (By.XPATH, "//button[normalize-space()='Yes']"),
+                (By.XPATH, "//input[@type='submit' and @value='Yes']"),
+            ):
+                try:
+                    for el in d.find_elements(*sel):
+                        if el.is_displayed():
+                            label = (el.text or el.get_attribute("value") or "").strip().lower()
+                            if label in ("yes", "stay signed in"):
+                                el.click()
+                                print("[+] Clicked 'Stay signed in: Yes'")
+                                time.sleep(2)
+                                return True
+                except Exception:
+                    continue
+            return False
+
+        captcha_seen = False
+        appear_deadline = time.time() + 30
+        while time.time() < appear_deadline:
+            if _is_success():
+                break
+            if _captcha_visible():
+                captcha_seen = True
+                break
+            time.sleep(0.5)
+
+        if captcha_seen:
+            banner(f"[+] CAPTCHA appeared — your turn!\n"
+                   f"\n"
+                   f"{_browser_hint()}"
+                   f"    Press and hold the puzzle button until it finishes.\n"
+                   f"    Microsoft may show 2-3 puzzles in a row — solve them all.\n"
+                   f"    The script auto-detects when the captcha clears AND\n"
+                   f"    the next page loads, so do NOT close the browser.\n"
+                   f"    Waiting up to {CAPTCHA_WAIT}s ...")
+        elif not _is_success():
+            print("[!] Captcha challenge did not appear within 30s — Microsoft\n"
+                  "    may have shown a different verification step. Continuing\n"
+                  "    to wait for the success page anyway.")
+
+        end = time.time() + CAPTCHA_WAIT
+        last_captcha_seen_at = time.time() if captcha_seen else 0.0
+        ms_error_logged_at = 0.0
+        verified = False
+
+        while time.time() < end:
+            if _is_success():
+                _click_stay_signed_in()
+                if _is_success():
+                    verified = True
+                    break
+
+            if _click_stay_signed_in():
+                if _is_success():
+                    verified = True
+                    break
+
+            if _captcha_visible():
+                last_captcha_seen_at = time.time()
+            elif last_captcha_seen_at and (time.time() - last_captcha_seen_at) >= 4:
+                if _is_success():
+                    _click_stay_signed_in()
+                    verified = True
+                    break
+
+            now = time.time()
+            if now - ms_error_logged_at > 15:
+                try:
+                    for err in d.find_elements(By.XPATH, ms_error_xpath):
+                        if err.is_displayed():
+                            txt = (err.text or "").strip()[:120]
+                            if txt:
+                                print(f"[!] Microsoft says: {txt}")
+                                ms_error_logged_at = now
+                            break
+                except Exception:
+                    pass
+
+            time.sleep(1.0)
+
+        if not verified:
+            print("[!] Captcha wait expired without confirmed account creation.")
+            print("    If you saw 'Stay signed in?' but the script ended, raise")
+            print("    'manual_captcha_wait_seconds' in config.json.")
             return
 
         banner(f"[+] ACCOUNT CREATED SUCCESSFULLY!\n"
@@ -659,10 +787,13 @@ def main():
                 print(f"[!] Unexpected error: {e}")
             finally:
                 if gen.driver:
+                    profile_dir = getattr(gen.driver, "_outlookgen_profile_dir", None)
                     try:
                         gen.driver.quit()
                     except Exception:
                         pass
+                    if profile_dir and os.path.isdir(profile_dir):
+                        shutil.rmtree(profile_dir, ignore_errors=True)
 
             done = ACCOUNTS_TO_CREATE != 0 and n >= ACCOUNTS_TO_CREATE
             if not done:
