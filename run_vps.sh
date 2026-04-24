@@ -10,9 +10,12 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+RED='\033[0;31m'
+
 say()  { echo -e "${CYAN}[*]${RESET} $*"; }
 ok()   { echo -e "${GREEN}[+]${RESET} $*"; }
 warn() { echo -e "${YELLOW}[!]${RESET} $*"; }
+fail() { echo -e "${RED}[x]${RESET} $*"; }
 
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
@@ -54,6 +57,220 @@ install_google_chrome() {
     }
     rm -f /tmp/google-chrome.deb
 }
+
+DOCTOR_PASS=0
+DOCTOR_WARN=0
+DOCTOR_FAIL=0
+
+dr_pass() { ok   "$*"; DOCTOR_PASS=$((DOCTOR_PASS+1)); }
+dr_warn() { warn "$*"; DOCTOR_WARN=$((DOCTOR_WARN+1)); }
+dr_fail() { fail "$*"; DOCTOR_FAIL=$((DOCTOR_FAIL+1)); }
+
+run_doctor() {
+    echo -e "${BOLD}=================================================================${RESET}"
+    echo -e "${BOLD} Outlook Generator — VPS Doctor${RESET}"
+    echo -e "${BOLD} Read-only checks. Nothing will be installed or changed.${RESET}"
+    echo -e "${BOLD}=================================================================${RESET}"
+    echo
+
+    echo -e "${BOLD}[ System ]${RESET}"
+    if [ -r /etc/os-release ]; then
+        OS_NAME="$(. /etc/os-release && echo "$PRETTY_NAME")"
+        dr_pass "OS: $OS_NAME"
+    else
+        dr_warn "Cannot read /etc/os-release"
+    fi
+
+    ARCH="$(uname -m)"
+    if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+        dr_pass "Architecture: $ARCH (Google Chrome supports this)"
+    else
+        dr_fail "Architecture: $ARCH (Google Chrome .deb only supports x86_64/amd64)"
+    fi
+
+    if command -v free >/dev/null 2>&1; then
+        MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+        if [ "${MEM_MB:-0}" -ge 900 ]; then
+            dr_pass "RAM: ${MEM_MB} MB"
+        else
+            dr_warn "RAM: ${MEM_MB} MB (Chrome may crash with <1 GB)"
+        fi
+    fi
+
+    DISK_FREE=$(df -m . | awk 'NR==2{print $4}')
+    if [ "${DISK_FREE:-0}" -ge 1500 ]; then
+        dr_pass "Disk free in $(pwd): ${DISK_FREE} MB"
+    else
+        dr_warn "Disk free in $(pwd): ${DISK_FREE} MB (recommend >= 1.5 GB)"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Browser ]${RESET}"
+    BROWSER="$(find_browser)"
+    if [ -z "$BROWSER" ]; then
+        dr_fail "No browser found. Run ./run_vps.sh to auto-install Google Chrome."
+    else
+        REAL="$(readlink -f "$BROWSER")"
+        if is_snap_browser "$BROWSER"; then
+            dr_fail "Browser is the SNAP version: $REAL"
+            dr_fail "    Snap Chromium does NOT work with Selenium."
+            dr_fail "    Run ./run_vps.sh to replace it with Google Chrome."
+        else
+            dr_pass "Browser: $REAL"
+            VER="$("$BROWSER" --version 2>/dev/null | head -n1 || echo unknown)"
+            dr_pass "Browser version: $VER"
+            if "$BROWSER" --headless=new --disable-gpu --no-sandbox \
+                --dump-dom about:blank >/dev/null 2>&1; then
+                dr_pass "Browser launches headlessly (Selenium will work)"
+            else
+                dr_fail "Browser failed to launch headlessly. Likely missing libs."
+                dr_fail "    Try: $SUDO apt install -y libnss3 libxss1 libasound2 libgbm1"
+            fi
+        fi
+    fi
+
+    if command -v chromedriver >/dev/null 2>&1; then
+        dr_pass "chromedriver: $(command -v chromedriver)"
+    else
+        dr_warn "chromedriver not found (Selenium 4 will auto-download one)"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Display & VNC tools ]${RESET}"
+    for cmd in Xvfb x11vnc websockify; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            dr_pass "$cmd: $(command -v $cmd)"
+        else
+            dr_fail "$cmd missing  ->  $SUDO apt install -y xvfb x11vnc websockify"
+        fi
+    done
+    NOVNC_WEB=""
+    for d in /usr/share/novnc /usr/share/webapps/novnc; do
+        [ -d "$d" ] && NOVNC_WEB="$d" && break
+    done
+    if [ -n "$NOVNC_WEB" ]; then
+        dr_pass "noVNC web files: $NOVNC_WEB"
+    else
+        dr_fail "noVNC web files missing  ->  $SUDO apt install -y novnc"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Python ]${RESET}"
+    if command -v python3 >/dev/null 2>&1; then
+        dr_pass "python3: $(python3 --version 2>&1)"
+    else
+        dr_fail "python3 missing  ->  $SUDO apt install -y python3 python3-venv"
+    fi
+    if [ -d "venv" ]; then
+        dr_pass "venv exists at ./venv"
+        if ./venv/bin/python -c "import selenium, faker, requests" >/dev/null 2>&1; then
+            dr_pass "venv has selenium, faker, requests installed"
+        else
+            dr_warn "venv is missing some deps. Re-run ./run_vps.sh to install them."
+        fi
+    else
+        dr_warn "venv not created yet (./run_vps.sh will create it)"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Network ]${RESET}"
+    PUBLIC_IP="$(curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null \
+                || curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null \
+                || hostname -I 2>/dev/null | awk '{print $1}')"
+    if [ -n "$PUBLIC_IP" ]; then
+        dr_pass "Public IP: $PUBLIC_IP"
+        ORG="$(curl -fsS --max-time 5 https://ipinfo.io/${PUBLIC_IP}/org 2>/dev/null || true)"
+        if [ -n "$ORG" ]; then
+            dr_pass "IP belongs to: $ORG"
+            if echo "$ORG" | grep -Eqi 'amazon|aws|google|gcp|microsoft|azure|digitalocean|linode|vultr|hetzner|ovh|contabo|oracle|scaleway|hostinger'; then
+                dr_warn "  ^ Datacenter IP — Microsoft often asks for SMS verification."
+                dr_warn "    Consider setting a residential proxy in config.json."
+            fi
+        fi
+    else
+        dr_fail "Could not determine public IP (no outbound HTTPS?)"
+    fi
+
+    if curl -fsS --max-time 8 -o /dev/null -w "%{http_code}\n" https://signup.live.com/signup?lic=1 \
+        2>/dev/null | grep -q "^2"; then
+        dr_pass "signup.live.com reachable from this VPS"
+    else
+        dr_warn "signup.live.com did not return 2xx (network blocked, or Microsoft is throttling this IP)"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Ports & firewall ]${RESET}"
+    if command -v ss >/dev/null 2>&1; then
+        for p in "$VNC_PORT" "$NOVNC_PORT"; do
+            if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${p}\$"; then
+                dr_warn "Port $p is already in use (likely a leftover service from a previous run)"
+            else
+                dr_pass "Port $p is free locally"
+            fi
+        done
+    else
+        dr_warn "ss not available, skipping local port check"
+    fi
+
+    if command -v ufw >/dev/null 2>&1; then
+        UFW_STATUS="$($SUDO ufw status 2>/dev/null | head -n1 || echo "")"
+        if echo "$UFW_STATUS" | grep -qi inactive; then
+            dr_warn "ufw is INACTIVE (firewall not blocking, but also not protecting)"
+        elif $SUDO ufw status 2>/dev/null | grep -q "${NOVNC_PORT}.*ALLOW"; then
+            dr_pass "ufw allows port $NOVNC_PORT"
+        else
+            dr_warn "ufw is active but port $NOVNC_PORT not allowed  ->  $SUDO ufw allow ${NOVNC_PORT}/tcp"
+        fi
+    else
+        dr_warn "ufw not installed; check your VPS firewall manually for port $NOVNC_PORT"
+    fi
+
+    echo
+    echo -e "${BOLD}[ Leftover processes ]${RESET}"
+    LEFTOVERS=0
+    for proc in "Xvfb $DISPLAY_NUM" "x11vnc.*-rfbport $VNC_PORT" "websockify.*$NOVNC_PORT"; do
+        if pgrep -f "$proc" >/dev/null 2>&1; then
+            dr_warn "Running: $proc  (the launcher will clean it up automatically)"
+            LEFTOVERS=$((LEFTOVERS+1))
+        fi
+    done
+    [ "$LEFTOVERS" -eq 0 ] && dr_pass "No leftover Xvfb / x11vnc / websockify processes"
+
+    echo
+    echo -e "${BOLD}=================================================================${RESET}"
+    echo -e " Summary:  ${GREEN}${DOCTOR_PASS} passed${RESET}   ${YELLOW}${DOCTOR_WARN} warnings${RESET}   ${RED}${DOCTOR_FAIL} failed${RESET}"
+    if [ "$DOCTOR_FAIL" -eq 0 ]; then
+        echo -e " ${GREEN}${BOLD}You're good to go. Run: ./run_vps.sh${RESET}"
+    else
+        echo -e " ${RED}${BOLD}Fix the failures above before running ./run_vps.sh${RESET}"
+    fi
+    echo -e "${BOLD}=================================================================${RESET}"
+
+    [ "$DOCTOR_FAIL" -eq 0 ]
+}
+
+if [ "${1:-}" = "--doctor" ] || [ "${1:-}" = "-d" ] || [ "${1:-}" = "doctor" ]; then
+    run_doctor
+    exit $?
+fi
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<EOF
+Usage: ./run_vps.sh [command]
+
+Commands:
+  (none)        Set up everything and start generating accounts.
+  --doctor      Run read-only checks for common breakages and exit.
+  --help        Show this help.
+
+Environment variables:
+  VNC_PORT      VNC server port (default 5900)
+  NOVNC_PORT    noVNC web bridge port (default 6080)
+  DISPLAY_NUM   Virtual display number (default :1)
+  SCREEN_SIZE   Virtual screen geometry (default 432x1035x24)
+EOF
+    exit 0
+fi
 
 if command -v apt-get >/dev/null 2>&1; then
     missing=()
