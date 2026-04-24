@@ -20,8 +20,40 @@ fail() { echo -e "${RED}[x]${RESET} $*"; }
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 DISPLAY_NUM="${DISPLAY_NUM:-:1}"
-SCREEN_SIZE="${SCREEN_SIZE:-432x1035x24}"
 export DISPLAY="$DISPLAY_NUM"
+
+if [ -z "${SCREEN_SIZE:-}" ]; then
+    DEFAULT_SCREEN="1300x920x24"
+    if [ -f config.json ] && command -v python3 >/dev/null 2>&1; then
+        DETECTED="$(python3 - <<'PY' 2>/dev/null
+import json, sys
+try:
+    cfg = json.load(open('config.json'))
+except Exception:
+    sys.exit(0)
+mobile = bool(cfg.get('mobile_emulation', False))
+device = cfg.get('device_name', 'Pixel 7')
+profiles = {
+    'Pixel 7':           (412, 915),
+    'iPhone 14 Pro':     (393, 852),
+    'Samsung Galaxy S22':(360, 780),
+}
+if mobile:
+    w, h = profiles.get(device, (412, 915))
+    print(f"{w + 30}x{h + 140}x24")
+else:
+    print("1300x920x24")
+PY
+)"
+        if [ -n "$DETECTED" ]; then
+            SCREEN_SIZE="$DETECTED"
+        else
+            SCREEN_SIZE="$DEFAULT_SCREEN"
+        fi
+    else
+        SCREEN_SIZE="$DEFAULT_SCREEN"
+    fi
+fi
 
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
