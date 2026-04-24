@@ -27,23 +27,56 @@ if [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+is_snap_browser() {
+    local b="$1"
+    [ -z "$b" ] && return 1
+    local real
+    real="$(readlink -f "$b" 2>/dev/null || echo "$b")"
+    [[ "$real" == */snap/* ]]
+}
+
+find_browser() {
+    command -v google-chrome 2>/dev/null \
+        || command -v google-chrome-stable 2>/dev/null \
+        || command -v chromium 2>/dev/null \
+        || command -v chromium-browser 2>/dev/null \
+        || true
+}
+
+install_google_chrome() {
+    say "Installing Google Chrome (.deb) — works reliably with Selenium ..."
+    $SUDO apt-get install -y wget gnupg ca-certificates >/dev/null
+    wget -qO /tmp/google-chrome.deb \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+    $SUDO apt-get install -y /tmp/google-chrome.deb || {
+        $SUDO apt-get install -f -y
+        $SUDO dpkg -i /tmp/google-chrome.deb || true
+    }
+    rm -f /tmp/google-chrome.deb
+}
+
 if command -v apt-get >/dev/null 2>&1; then
     missing=()
     command -v Xvfb       >/dev/null 2>&1 || missing+=(xvfb)
     command -v x11vnc     >/dev/null 2>&1 || missing+=(x11vnc)
     command -v websockify >/dev/null 2>&1 || missing+=(websockify novnc)
     command -v curl       >/dev/null 2>&1 || missing+=(curl)
-    if ! command -v chromium >/dev/null 2>&1 \
-       && ! command -v chromium-browser >/dev/null 2>&1; then
-        missing+=(chromium-browser chromium-chromedriver)
-    fi
+    command -v wget       >/dev/null 2>&1 || missing+=(wget)
     if [ ${#missing[@]} -gt 0 ]; then
         say "Installing missing system packages: ${missing[*]}"
         $SUDO apt-get update -y
-        $SUDO apt-get install -y "${missing[@]}" || {
-            warn "apt failed; trying alternative chromium package names ..."
-            $SUDO apt-get install -y chromium chromium-driver || true
-        }
+        $SUDO apt-get install -y "${missing[@]}"
+    fi
+
+    BROWSER="$(find_browser)"
+    if [ -z "$BROWSER" ] || is_snap_browser "$BROWSER"; then
+        if [ -n "$BROWSER" ] && is_snap_browser "$BROWSER"; then
+            warn "Detected snap-packaged browser at $(readlink -f "$BROWSER")."
+            warn "Snap Chromium can't be driven by Selenium. Replacing with Google Chrome ..."
+            $SUDO apt-get remove -y chromium-browser chromium chromium-chromedriver 2>/dev/null || true
+            $SUDO snap remove chromium 2>/dev/null || true
+        fi
+        install_google_chrome
     fi
 fi
 

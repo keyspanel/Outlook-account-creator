@@ -155,11 +155,21 @@ def build_driver():
     else:
         print("[*] No proxy")
 
-    chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
-    chromedriver_path = shutil.which("chromedriver")
-    if chromium_path:
-        chrome_options.binary_location = chromium_path
+    browser_path = (
+        shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+    )
+    if browser_path and "/snap/" in os.path.realpath(browser_path):
+        print("[!] Detected snap-packaged browser at "
+              f"{os.path.realpath(browser_path)}.\n"
+              "    Snap Chromium does not work with Selenium. Install\n"
+              "    Google Chrome (.deb) instead — see run_vps.sh.")
+    if browser_path:
+        chrome_options.binary_location = browser_path
 
+    chromedriver_path = shutil.which("chromedriver")
     if chromedriver_path:
         return webdriver.Chrome(service=Service(executable_path=chromedriver_path),
                                 options=chrome_options)
